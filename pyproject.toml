@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-processing"
+version = "0.2.0"
+description = "Modular video processing: trim silence (with fades), enhance/upscale, voice extraction, transcription, subject tagging"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "moviepy>=2.0.0",
+]
+
+[project.optional-dependencies]
+transcribe = ["openai-whisper"]
+faster-whisper = ["faster-whisper"]
+dev = ["pytest"]
+
+[project.scripts]
+video-processing = "video_processing.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

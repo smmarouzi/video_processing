@@ -1,0 +1,9 @@
+# Core dependencies (install with: pip install -e .)
+# Requires Python 3.9+ and FFmpeg on your PATH.
+
+moviepy>=2.0.0
+
+# Optional: transcription
+# pip install -e ".[transcribe]"     → openai-whisper
+# pip install -e ".[faster-whisper]" → faster-whisper
+# Punctuation (Farsi): pip install transformers torch protobuf
