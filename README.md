@@ -10,10 +10,22 @@ Modular toolkit for lecture-style videos: **trim silence** (with smooth fades), 
 - **FFmpeg** on your `PATH` (for trim, enhance, voice extract)
 - Optional: **Whisper** for transcription (`pip install openai-whisper`)
 
-### 2. Install (editable, from repo root)
+### 2. Virtual environment (recommended)
+
+Use a dedicated virtual environment instead of your system (or conda `base`) Python:
 
 ```bash
 cd video_processing
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+# On Windows:  .venv\Scripts\activate
+```
+
+You should see `(.venv)` in your prompt. Run all following `pip` and `python` commands in this environment. To leave it later: `deactivate`.
+
+### 3. Install (editable, from repo root)
+
+```bash
 pip install -e .
 ```
 
@@ -23,9 +35,9 @@ For transcription support:
 pip install -e ".[transcribe]"
 ```
 
-### 3. Run the CLI
+### 4. Run the CLI
 
-From the repo root (with `pip install -e .` already done):
+From the repo root with the venv activated (and `pip install -e .` already done):
 
 ```bash
 # List commands
