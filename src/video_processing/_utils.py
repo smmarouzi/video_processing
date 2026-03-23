@@ -1,7 +1,7 @@
-"""Shared utilities: duration, FFmpeg runner."""
+"""Shared utilities: duration, FFmpeg runners."""
 
 import subprocess
-from typing import List, Optional
+from typing import Iterable, List
 
 
 def get_duration_seconds(path: str) -> float:
@@ -39,3 +39,27 @@ def run_ffmpeg_capture(args: List[str]) -> str:
         check=False,
     )
     return result.stdout or ""
+
+
+def iter_ffmpeg_output(args: List[str]) -> Iterable[str]:
+    """
+    Run ffmpeg and yield merged stdout/stderr lines as they are produced.
+
+    Useful for long-running commands where storing all logs in memory is wasteful.
+    """
+    process = subprocess.Popen(
+        ["ffmpeg", "-hide_banner"] + args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    try:
+        for line in process.stdout:
+            yield line
+    finally:
+        process.stdout.close()
+        return_code = process.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, process.args)

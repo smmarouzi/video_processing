@@ -6,9 +6,16 @@ and fade-out at the end so transitions are smooth.
 """
 
 import re
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from video_processing._utils import get_duration_seconds, run_ffmpeg, run_ffmpeg_capture
+from video_processing._utils import (
+    get_duration_seconds,
+    iter_ffmpeg_output,
+    run_ffmpeg,
+)
 
 
 def detect_silence(
@@ -17,16 +24,15 @@ def detect_silence(
     min_silence_duration: float = 1.0,
 ) -> List[Tuple[float, float]]:
     """Detect silent intervals (start_sec, end_sec) using FFmpeg silencedetect."""
-    output = run_ffmpeg_capture([
-        "-vn", "-i", input_path,
-        "-af", f"silencedetect=n={threshold_db}dB:d={min_silence_duration}",
-        "-f", "null", "-",
-    ])
     pattern = re.compile(
         r"silence_end:\s*([0-9\.]+)\s*\|\s*silence_duration:\s*([0-9\.]+)"
     )
     ranges: List[Tuple[float, float]] = []
-    for line in output.splitlines():
+    for line in iter_ffmpeg_output([
+        "-vn", "-i", input_path,
+        "-af", f"silencedetect=n={threshold_db}dB:d={min_silence_duration}",
+        "-f", "null", "-",
+    ]):
         match = pattern.search(line)
         if not match:
             continue
@@ -99,6 +105,8 @@ def trim_silence_with_fades(
     min_clip_duration: float = 0.5,
     fade_duration: float = 0.2,
     write_silence_list_path: Optional[str] = None,
+    max_filter_segments: int = 120,
+    chunk_encode_workers: int = 1,
 ) -> List[Tuple[float, float]]:
     """
     Trim silent sections and write video with fade-in/fade-out at each cut
@@ -146,6 +154,16 @@ def trim_silence_with_fades(
         ])
         return silence_ranges
 
+    if _should_use_chunked_trim(len(segments), max_filter_segments):
+        _trim_with_chunked_concat(
+            input_path=input_path,
+            output_path=output_path,
+            segments=segments,
+            fade_duration=fade_duration,
+            chunk_encode_workers=max(1, int(chunk_encode_workers)),
+        )
+        return silence_ranges
+
     fade = min(fade_duration, 0.25)
     v_parts: List[str] = []
     a_parts: List[str] = []
@@ -178,6 +196,93 @@ def trim_silence_with_fades(
         output_path,
     ])
     return silence_ranges
+
+
+def _should_use_chunked_trim(segment_count: int, max_filter_segments: int) -> bool:
+    """Use chunked mode when filter graphs become too large for long videos."""
+    return segment_count > max_filter_segments
+
+
+def _run_trim_chunk_encode(
+    job: Tuple[int, str, float, float, str, Optional[str], Optional[str]],
+) -> int:
+    """
+    Encode one kept segment to a temp file. Suitable for parallel workers
+    (each invocation runs a separate ffmpeg process).
+
+    job: (index, input_path, start, end, segment_out_path, vf, af)
+    """
+    _i, input_path, start, end, segment_out_path, vf, af = job
+    cmd: List[str] = [
+        "-ss", str(start),
+        "-to", str(end),
+        "-i", input_path,
+    ]
+    if vf:
+        cmd += ["-vf", vf]
+    if af:
+        cmd += ["-af", af]
+    cmd += [
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "aac",
+        segment_out_path,
+    ]
+    run_ffmpeg(cmd)
+    return _i
+
+
+def _trim_with_chunked_concat(
+    *,
+    input_path: str,
+    output_path: str,
+    segments: List[Tuple[float, float]],
+    fade_duration: float,
+    chunk_encode_workers: int = 1,
+) -> None:
+    fade = min(fade_duration, 0.25)
+    output_parent = str(Path(output_path).resolve().parent)
+    with tempfile.TemporaryDirectory(prefix="trim_chunks_", dir=output_parent) as tmp_dir:
+        temp_dir = Path(tmp_dir)
+        list_path = temp_dir / "concat.txt"
+        segment_paths: List[Path] = []
+
+        jobs: List[Tuple[int, str, float, float, str, Optional[str], Optional[str]]] = []
+        for i, (start, end) in enumerate(segments):
+            segment_path = temp_dir / f"segment_{i:05d}.mp4"
+            segment_paths.append(segment_path)
+            seg_dur = end - start
+            vf: Optional[str] = None
+            af: Optional[str] = None
+            if seg_dur > 2 * fade:
+                fade_out_st = max(0.0, seg_dur - fade)
+                vf = f"fade=t=in:st=0:d={fade},fade=t=out:st={fade_out_st}:d={fade}"
+                af = f"afade=t=in:st=0:d={fade},afade=t=out:st={fade_out_st}:d={fade}"
+            jobs.append(
+                (i, input_path, start, end, str(segment_path), vf, af)
+            )
+
+        workers = max(1, int(chunk_encode_workers))
+        if workers == 1:
+            for job in jobs:
+                _run_trim_chunk_encode(job)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(_run_trim_chunk_encode, job): job[0]
+                    for job in jobs
+                }
+                for fut in as_completed(futures):
+                    fut.result()
+
+        lines = [f"file '{p.as_posix()}'" for p in segment_paths]
+        list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        run_ffmpeg([
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(list_path),
+            "-c", "copy",
+            output_path,
+        ])
 
 
 def _ts(sec: float) -> str:

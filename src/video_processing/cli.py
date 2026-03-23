@@ -15,6 +15,7 @@ from video_processing.enhance import enhance_video
 from video_processing.voice import extract_audio, transcribe
 from video_processing.tag_subjects import tag_subjects
 from video_processing.pipeline import run_pipeline
+from video_processing.prepare_final import run_prepare_final
 
 
 def _add_io(p: argparse.ArgumentParser) -> None:
@@ -23,7 +24,6 @@ def _add_io(p: argparse.ArgumentParser) -> None:
 
 
 def cmd_trim(args: argparse.Namespace) -> None:
-    from video_processing.trim_silence import detect_silence
     trim_silence_with_fades(
         args.input,
         args.output,
@@ -33,6 +33,8 @@ def cmd_trim(args: argparse.Namespace) -> None:
         min_clip_duration=args.min_clip_duration,
         fade_duration=args.fade_duration,
         write_silence_list_path=args.write_silence_list or None,
+        max_filter_segments=args.max_filter_segments,
+        chunk_encode_workers=args.chunk_workers,
     )
     print("Trimmed (with fades):", args.output)
 
@@ -45,6 +47,7 @@ def cmd_enhance(args: argparse.Namespace) -> None:
         preset=args.preset,
         audio_normalize=args.audio_normalize,
         crf=args.crf,
+        encoder_threads=args.encoder_threads,
     )
     print("Enhanced:", args.output)
 
@@ -96,12 +99,15 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
             "min_silence_duration": args.silence_duration,
             "fade_duration": args.fade_duration,
             "write_silence_list_path": args.write_silence_list or None,
+            "max_filter_segments": args.max_filter_segments,
+            "chunk_encode_workers": args.chunk_workers,
         },
         enhance_options={
             "scale": args.scale or None,
             "preset": args.preset,
             "audio_normalize": args.audio_normalize,
             "crf": args.crf,
+            "encoder_threads": args.encoder_threads,
         },
         transcribe_options={
             "model_size": args.whisper_model,
@@ -111,6 +117,31 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
         },
     )
     print("Pipeline steps:", result["steps"])
+    print("Outputs:", result["paths"])
+
+
+def cmd_prepare_final(args: argparse.Namespace) -> None:
+    """Full video: timed silence trim → timed enhance → final.mp4 + reports."""
+    result = run_prepare_final(
+        args.input,
+        args.output_dir,
+        threshold_db=args.silence_threshold_db,
+        min_silence_duration=args.silence_duration,
+        padding_before_silence=args.padding,
+        min_clip_duration=args.min_clip_duration,
+        fade_duration=args.fade_duration,
+        write_silence_list_path=args.write_silence_list or None,
+        max_filter_segments=args.max_filter_segments,
+        chunk_encode_workers=args.chunk_workers,
+        scale=args.scale or None,
+        preset=args.preset,
+        audio_normalize=args.audio_normalize,
+        crf=args.crf,
+        encoder_threads=args.encoder_threads,
+    )
+    print("Trim wall (sec):", result["trim_wall_sec"])
+    print("Enhance wall (sec):", result["enhance_wall_sec"])
+    print("Total wall (sec):", result["total_wall_sec"])
     print("Outputs:", result["paths"])
 
 
@@ -126,6 +157,19 @@ def main() -> int:
     p_trim.add_argument("--padding", type=float, default=0.0, help="Padding before silence (sec)")
     p_trim.add_argument("--min-clip-duration", type=float, default=0.5)
     p_trim.add_argument("--fade-duration", type=float, default=0.2)
+    p_trim.add_argument(
+        "--max-filter-segments",
+        type=int,
+        default=120,
+        help="Switch to memory-efficient chunked mode when kept segments exceed this value",
+    )
+    p_trim.add_argument(
+        "--chunk-workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Parallel ffmpeg jobs when using chunked trim (1 = sequential; try 4 on multi-core)",
+    )
     p_trim.add_argument("--write-silence-list", default=None, metavar="PATH")
     p_trim.set_defaults(run=cmd_trim)
 
@@ -136,6 +180,13 @@ def main() -> int:
     p_enhance.add_argument("--preset", choices=("light", "default", "strong"), default="default")
     p_enhance.add_argument("--audio-normalize", action="store_true")
     p_enhance.add_argument("--crf", type=int, default=18)
+    p_enhance.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="FFmpeg -threads for libx264 (omit for default; e.g. 0 = auto)",
+    )
     p_enhance.set_defaults(run=cmd_enhance)
 
     # voice (extract audio)
@@ -175,16 +226,75 @@ def main() -> int:
     p_pipe.add_argument("--silence-threshold-db", type=float, default=-35.0)
     p_pipe.add_argument("--silence-duration", type=float, default=1.0)
     p_pipe.add_argument("--fade-duration", type=float, default=0.2)
+    p_pipe.add_argument(
+        "--max-filter-segments",
+        type=int,
+        default=120,
+        help="Switch to memory-efficient chunked mode when kept segments exceed this value",
+    )
+    p_pipe.add_argument(
+        "--chunk-workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Parallel ffmpeg jobs when chunked trim is used",
+    )
     p_pipe.add_argument("--write-silence-list", default=None)
     p_pipe.add_argument("--scale", default=None)
     p_pipe.add_argument("--preset", default="default")
     p_pipe.add_argument("--audio-normalize", action="store_true")
     p_pipe.add_argument("--crf", type=int, default=18)
+    p_pipe.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="FFmpeg -threads for enhance step libx264",
+    )
     p_pipe.add_argument("--whisper-model", default="small", help="tiny, base, small, medium, large-v3 (small+ for Farsi)")
     p_pipe.add_argument("--transcribe-backend", choices=("openai", "faster_whisper"), default="openai")
     p_pipe.add_argument("--restore-punctuation", action="store_true", help="Add punctuation to transcript (Farsi)")
     p_pipe.add_argument("--language", default=None)
     p_pipe.set_defaults(run=cmd_pipeline)
+
+    # prepare-final: full video trim → enhance with timing report
+    p_prep = sub.add_parser(
+        "prepare-final",
+        help="Full video: silence trim → enhance; writes final.mp4 + TIMING_REPORT.md",
+    )
+    p_prep.add_argument("--input", "-i", required=True, help="Input video (e.g. full lecture)")
+    p_prep.add_argument("--output-dir", "-o", required=True, help="Output directory")
+    p_prep.add_argument("--silence-threshold-db", type=float, default=-35.0)
+    p_prep.add_argument("--silence-duration", type=float, default=1.0)
+    p_prep.add_argument("--padding", type=float, default=0.0, help="Padding before silence (sec)")
+    p_prep.add_argument("--min-clip-duration", type=float, default=0.5)
+    p_prep.add_argument("--fade-duration", type=float, default=0.2)
+    p_prep.add_argument(
+        "--max-filter-segments",
+        type=int,
+        default=120,
+        help="Chunked trim when kept segments exceed this (long videos)",
+    )
+    p_prep.add_argument(
+        "--chunk-workers",
+        type=int,
+        default=4,
+        metavar="N",
+        help="Parallel ffmpeg jobs during chunked trim (default: 4)",
+    )
+    p_prep.add_argument("--write-silence-list", default=None, metavar="PATH")
+    p_prep.add_argument("--scale", default=None, help="e.g. 1920:1080")
+    p_prep.add_argument("--preset", choices=("light", "default", "strong"), default="default")
+    p_prep.add_argument("--audio-normalize", action="store_true")
+    p_prep.add_argument("--crf", type=int, default=18)
+    p_prep.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="FFmpeg -threads for libx264 on enhance (omit for default; 0 = auto in ffmpeg)",
+    )
+    p_prep.set_defaults(run=cmd_prepare_final)
 
     args = parser.parse_args()
     args.run(args)

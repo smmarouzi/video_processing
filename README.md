@@ -43,7 +43,10 @@ From the repo root with the venv activated (and `pip install -e .` already done)
 # List commands
 python -m video_processing --help
 
-# Trim silence (with fades at cuts)
+# Full lecture: silence trim → enhance, with wall-clock timing report (recommended for long videos)
+python -m video_processing prepare-final -i lecture.mp4 -o output_dir
+
+# Trim silence only (with fades at cuts)
 python -m video_processing trim -i input.mp4 -o trimmed.mp4
 
 # Enhance / upscale
@@ -94,10 +97,33 @@ PYTHONPATH=src python -m video_processing trim -i input.mp4 -o trimmed.mp4
 python -m video_processing trim -i in.mp4 -o out.mp4 --fade-duration 0.2 --write-silence-list out/silence
 ```
 
+For long videos with many cuts, trimming auto-switches to a **chunked** mode when segment count exceeds `--max-filter-segments` (default: `120`). In chunked mode, **`--chunk-workers N`** runs several ffmpeg encodes at once (default **4** on `prepare-final`).
+
+### Full video: trim → enhance + timing (`prepare-final`)
+
+One command for a **full-length** file: silence trim, then enhancement, with a **wall-clock report**.
+
+```bash
+python -m video_processing prepare-final -i lecture_2h.mp4 -o output_dir
+```
+
+Writes under `output_dir`:
+
+| File | Purpose |
+|------|---------|
+| `trimmed.mp4` | After silence removal (with fades) |
+| `final.mp4` | After enhance (deliverable) |
+| `TIMING_REPORT.md` | Human-readable trim / enhance / total seconds |
+| `timing.json` | Same timing + settings (machine-readable) |
+
+Useful options: `--chunk-workers`, `--max-filter-segments`, `--preset`, `--scale`, `--encoder-threads`, `--write-silence-list PATH`.
+
+**Note:** Enhance **must** run after trim (it needs the trimmed file). “Parallel” here means **parallel chunk encodes during trim** plus **multi-threaded libx264** during enhance—not overlapping trim and enhance on the same output.
+
 ### Enhance / upscale
 
-- Runs **after** trimming.
-- Options: `--scale 1920:1080`, `--preset light|default|strong`, `--audio-normalize`, `--crf 18`.
+- Runs **after** trimming (or use `prepare-final` which runs both in order).
+- Options: `--scale 1920:1080`, `--preset light|default|strong`, `--audio-normalize`, `--crf 18`, `--encoder-threads N` (ffmpeg `-threads` before libx264).
 
 ### Voice extraction and transcription
 
@@ -173,7 +199,8 @@ video_processing/
 │       ├── enhance.py       # upscale + denoise/sharpen/eq
 │       ├── voice.py         # extract audio + transcribe (Whisper)
 │       ├── tag_subjects.py  # tag subjects at exact seconds
-│       ├── pipeline.py     # run all steps
+│       ├── pipeline.py      # run all steps
+│       ├── prepare_final.py # timed trim → enhance for full videos
 │       ├── cli.py           # CLI entry
 │       └── __main__.py
 ├── tests/
@@ -189,8 +216,9 @@ video_processing/
 
 ## Options reference
 
-- **Trim**: `--silence-threshold-db`, `--silence-duration`, `--padding`, `--min-clip-duration`, `--fade-duration`, `--write-silence-list`
-- **Enhance**: `--scale`, `--preset light|default|strong`, `--audio-normalize`, `--crf`
+- **prepare-final**: `--silence-threshold-db`, `--silence-duration`, `--padding`, `--min-clip-duration`, `--fade-duration`, `--max-filter-segments`, `--chunk-workers` (default 4), `--write-silence-list`, `--scale`, `--preset`, `--audio-normalize`, `--crf`, `--encoder-threads`
+- **Trim**: same silence options as above; `--chunk-workers` default 1
+- **Enhance**: `--scale`, `--preset light|default|strong`, `--audio-normalize`, `--crf`, `--encoder-threads`
 - **Transcribe**: `--model small|medium|large-v3` (small+ for Farsi), `--backend openai|faster_whisper`, `--language fa`, `--restore-punctuation` (Farsi)
 - **Pipeline**: same options plus `--no-trim`, `--no-enhance`, etc., `--whisper-model`, `--transcribe-backend`, `--language`, `--restore-punctuation`
 

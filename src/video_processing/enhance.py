@@ -24,6 +24,7 @@ def enhance_video(
     preset: str = "default",
     audio_normalize: bool = False,
     crf: int = 18,
+    encoder_threads: Optional[int] = None,
 ) -> None:
     """
     Upscale and/or enhance video: denoise, sharpen, contrast/saturation.
@@ -38,5 +39,7 @@ def enhance_video(
     cmd = ["-i", input_path, "-vf", vf]
     if audio_normalize:
         cmd += ["-af", "dynaudnorm"]
+    if encoder_threads is not None:
+        cmd += ["-threads", str(int(encoder_threads))]
     cmd += ["-c:v", "libx264", "-crf", str(crf), "-preset", "medium", "-c:a", "aac", output_path]
     run_ffmpeg(cmd)
