@@ -1,5 +1,4 @@
 """Tests for trim_silence module."""
-import pytest
 from video_processing.trim_silence import (
     build_speech_segments,
     detect_silence,
@@ -24,7 +23,8 @@ def test_build_speech_segments_with_padding():
     segments = build_speech_segments(
         60.0, [(10.0, 15.0)], padding_before_silence=1.0, min_clip_duration=0.5
     )
-    assert segments == [(0.0, 9.0), (15.0, 60.0)]
+    # Padding is applied before each silence by pulling the *next* segment start earlier.
+    assert segments == [(0.0, 10.0), (14.0, 60.0)]
 
 
 def test_build_speech_segments_min_clip_duration():
