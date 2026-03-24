@@ -33,6 +33,8 @@ For transcription support:
 
 ```bash
 pip install -e ".[transcribe]"
+# Optional faster backend for transcription performance:
+pip install -e ".[faster-whisper]"
 ```
 
 ### 4. Run the CLI
@@ -164,7 +166,7 @@ From repo root:
 ```bash
 pip install -e ".[dev]"          # or: pip install pytest
 # Optional: pip install -e ".[transcribe]" for Whisper
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
 
 - **tests/test_trim_silence.py** – segment building, fade logic
@@ -176,8 +178,8 @@ pytest tests/ -v
 Run a single module:
 
 ```bash
-pytest tests/test_trim_silence.py -v
-pytest tests/test_tag_subjects.py -v
+python -m pytest tests/test_trim_silence.py -v
+python -m pytest tests/test_tag_subjects.py -v
 ```
 
 ---
