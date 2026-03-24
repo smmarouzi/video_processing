@@ -1,6 +1,7 @@
 """Command-line interface: trim, enhance, voice, tag, pipeline."""
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -18,12 +19,35 @@ from video_processing.pipeline import run_pipeline
 from video_processing.prepare_final import run_prepare_final
 
 
+def _exit_with_error(message: str, *, hint: str = "") -> None:
+    print(f"Error: {message}", file=sys.stderr)
+    if hint:
+        print(f"Hint: {hint}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _require_input_file(path: str, *, arg_name: str = "--input") -> Path:
+    p = Path(path).expanduser()
+    if not p.exists():
+        _exit_with_error(
+            f"{arg_name} file not found: {path}",
+            hint="Use an existing absolute path or run from the directory containing the file.",
+        )
+    if not p.is_file():
+        _exit_with_error(
+            f"{arg_name} must be a file: {path}",
+            hint="Pass a media/audio file path, not a directory.",
+        )
+    return p
+
+
 def _add_io(p: argparse.ArgumentParser) -> None:
     p.add_argument("--input", "-i", required=True, help="Input video path")
     p.add_argument("--output", "-o", required=True, help="Output path")
 
 
 def cmd_trim(args: argparse.Namespace) -> None:
+    _require_input_file(args.input)
     trim_silence_with_fades(
         args.input,
         args.output,
@@ -40,6 +64,7 @@ def cmd_trim(args: argparse.Namespace) -> None:
 
 
 def cmd_enhance(args: argparse.Namespace) -> None:
+    _require_input_file(args.input)
     enhance_video(
         args.input,
         args.output,
@@ -53,11 +78,13 @@ def cmd_enhance(args: argparse.Namespace) -> None:
 
 
 def cmd_voice(args: argparse.Namespace) -> None:
+    _require_input_file(args.input)
     extract_audio(args.input, args.output, sample_rate=args.sample_rate)
     print("Audio extracted:", args.output)
 
 
 def cmd_transcribe(args: argparse.Namespace) -> None:
+    _require_input_file(args.input)
     out = transcribe(
         args.input,
         output_path=args.output,
@@ -73,6 +100,7 @@ def cmd_transcribe(args: argparse.Namespace) -> None:
 
 def cmd_tag(args: argparse.Namespace) -> None:
     import json
+    _require_input_file(args.transcript_path, arg_name="--transcript-path")
     with open(args.transcript_path, encoding="utf-8") as f:
         data = json.load(f)
     segments = data.get("segments", [])
@@ -86,6 +114,7 @@ def cmd_tag(args: argparse.Namespace) -> None:
 
 
 def cmd_pipeline(args: argparse.Namespace) -> None:
+    _require_input_file(args.input)
     result = run_pipeline(
         args.input,
         args.output_dir,
@@ -122,6 +151,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 
 def cmd_prepare_final(args: argparse.Namespace) -> None:
     """Full video: timed silence trim → timed enhance → final.mp4 + reports."""
+    _require_input_file(args.input)
     result = run_prepare_final(
         args.input,
         args.output_dir,
@@ -297,7 +327,24 @@ def main() -> int:
     p_prep.set_defaults(run=cmd_prepare_final)
 
     args = parser.parse_args()
-    args.run(args)
+    try:
+        args.run(args)
+    except subprocess.CalledProcessError as e:
+        cmd = " ".join(str(c) for c in (e.cmd or []))
+        _exit_with_error(
+            f"External command failed (exit {e.returncode}): {cmd or 'unknown command'}",
+            hint="Verify input paths, and ensure ffmpeg/ffprobe are installed and available in PATH.",
+        )
+    except ImportError as e:
+        _exit_with_error(
+            str(e),
+            hint="Install missing dependency, then re-run the command.",
+        )
+    except FileNotFoundError as e:
+        _exit_with_error(
+            str(e),
+            hint="Check that all input files exist and command paths are correct.",
+        )
     return 0
 
 
